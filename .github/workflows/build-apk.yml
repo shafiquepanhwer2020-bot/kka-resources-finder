@@ -1,0 +1,56 @@
+# Builds the Android app (APK) on GitHub's servers and publishes it as a Release.
+# Phone download link (always the newest build):
+#   https://github.com/shafiquepanhwer2020-bot/kka-resources-finder/releases/latest/download/KKA-Resources-Finder.apk
+name: Build Android APK
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build the APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk KKA-Resources-Finder.apk
+
+      - name: Keep a copy in this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: KKA-Resources-Finder-APK
+          path: KKA-Resources-Finder.apk
+
+      - name: Publish as a Release (download link for the phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-build-${{ github.run_number }}
+          name: KKA Finder APK - build ${{ github.run_number }}
+          body: |
+            Android app for Know Knowledge Academy - Resources Finder.
+            Download **KKA-Resources-Finder.apk** below and open it on your phone to install.
+          files: KKA-Resources-Finder.apk
+          make_latest: true
