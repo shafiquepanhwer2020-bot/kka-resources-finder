@@ -1,0 +1,15 @@
+{
+  "name": "Know Knowledge Academy - Resources Finder",
+  "short_name": "KKA Finder",
+  "description": "Jobs, internships, government jobs and scholarships in Pakistan matched to your profile.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1f5fae",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
