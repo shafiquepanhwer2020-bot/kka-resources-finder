@@ -25,7 +25,18 @@ function GN(q) {
   if (!/when:\d+d/.test(q)) q += " when:30d";
   return "https://news.google.com/rss/search?q=" + encodeURIComponent(q) + "&hl=en-PK&gl=PK&ceid=PK:en";
 }
-const S = (name, type, kind, url, ttl, label) => ({ name, type, kind, url, ttl, label: label || name });
+// Bing News RSS: backup when Google News refuses (it rate-limits cloud servers).
+// Bing ignores "site:" in news search, so the site is turned into a plain keyword.
+function BING(gnUrl) {
+  let q = new URL(gnUrl).searchParams.get("q") || "";
+  q = q.replace(/when:\d+d/g, "").replace(/site:([a-z0-9.\-]+)/gi, (m, d) => d.replace(/\.(pk|org|com|gov)$/i, "")).replace(/\s+/g, " ").trim();
+  return "https://www.bing.com/news/search?q=" + encodeURIComponent(q) + "&format=rss&qft=interval%3d%229%22";
+}
+const S = (name, type, kind, url, ttl, label) => {
+  const s = { name, type, kind, url, ttl, label: label || name };
+  if (url.startsWith("https://news.google.com/")) s.fallback = { url: BING(url), kind: "rss", via: "Bing News" };
+  return s;
+};
 
 function buildSources(p) {
   const kw = (p.kw || "HR").slice(0, 40), city = (p.city || "").slice(0, 40), psc = (p.psc || "").slice(0, 12);
@@ -47,7 +58,9 @@ function buildSources(p) {
   }
   if (rcat) L.push(S(`Remotive - remote ${kw} jobs`, "job", "remotive", `https://remotive.com/api/remote-jobs?category=${rcat}&limit=80`, 360, "Remotive"));
   // government
-  L.push(S("FPSC - official advertisements", "govt", "fpsc", "https://www.fpsc.gov.pk/jobs", 60));
+  const fp = S("FPSC - official advertisements", "govt", "fpsc", "https://www.fpsc.gov.pk/jobs", 60);
+  fp.fallback = { url: GN("site:fpsc.gov.pk advertisement"), kind: "rss", via: "Google News (FPSC)" };
+  L.push(fp);
   const gcity = city || "Pakistan";
   L.push(S(`Jobz.pk - govt jobs ${gcity}`, "govt", "rss", GN(`site:jobz.pk government jobs ${gcity}`), 45));
   L.push(S(`Jobz.pk - govt ${kw} jobs`, "govt", "rss", GN(`site:jobz.pk govt ${kw}`), 45));
@@ -103,7 +116,7 @@ function parseRss(body, src) {
     const date = clean(tag(x, "pubDate"));
     const desc = clean(tag(x, "description"));
     const cont = clean(tag(x, "content:encoded").slice(0, 15000), 2500);
-    const source = clean(tag(x, "source")) || src.label;
+    const source = clean(tag(x, "source")) || clean(tag(x, "News:Source")) || src.label;
     if (source && title.endsWith(" - " + source)) title = title.slice(0, -(source.length + 3));
     let summary = desc.startsWith(title) ? "" : desc;
     if (summary.length > 300) summary = summary.slice(0, 300) + "...";
@@ -143,7 +156,8 @@ function parseRemotive(body, src) {
 /* ---------------- fetching + caching ---------------- */
 async function fetchText(url, force, ttlMin) {
   let last;
-  for (let t = 0; t < 2; t++) {
+  for (let t = 0; t < 3; t++) {
+    if (t > 0) await new Promise(r => setTimeout(r, 700 * t + Math.random() * 600));   // back off before retrying
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 15000);
     try {
@@ -152,10 +166,15 @@ async function fetchText(url, force, ttlMin) {
         signal: ac.signal,
         cf: force ? { cacheTtl: 0 } : { cacheTtl: ttlMin * 60, cacheEverything: true },
       });
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!r.ok) {
+        const err = new Error("HTTP " + r.status);
+        if (r.status !== 429 && r.status < 500) { err.fatal = true; }
+        throw err;
+      }
       return await r.text();
     } catch (e) {
       last = e;
+      if (e.fatal) break;
     } finally {
       clearTimeout(timer);
     }
@@ -171,9 +190,17 @@ async function getSource(src, force, ctx) {
     try { const hit = await cache.match(key); if (hit) return { ...(await hit.json()), cached: true }; } catch (e) { }
   }
   try {
-    const body = await fetchText(src.url, force, src.ttl);
-    const items = src.kind === "fpsc" ? parseFpsc(body, src) : src.kind === "remotive" ? parseRemotive(body, src) : parseRss(body, src);
-    const d = { ok: true, items, error: null, fetchedAt: new Date().toISOString() };
+    let items, via = null;
+    try {
+      const body = await fetchText(src.url, force, src.ttl);
+      items = src.kind === "fpsc" ? parseFpsc(body, src) : src.kind === "remotive" ? parseRemotive(body, src) : parseRss(body, src);
+    } catch (e1) {
+      if (!src.fallback) throw e1;
+      const body = await fetchText(src.fallback.url, force, src.ttl);
+      items = parseRss(body, src);
+      via = src.fallback.via;
+    }
+    const d = { ok: true, items, error: null, via, fetchedAt: new Date().toISOString() };
     if (cache) {
       const str = JSON.stringify(d);
       const put = (k, age) => cache.put(k, new Response(str, { headers: { "content-type": "application/json", "cache-control": `max-age=${age}` } }));
@@ -194,7 +221,7 @@ export async function onRequest(ctx) {
   const url = new URL(ctx.request.url);
   const path = url.pathname.replace(/\/+$/, "");
   const p = Object.fromEntries(url.searchParams);
-  if (path === "/api/health") return json({ ok: true, version: 2, mode: "cloud" });
+  if (path === "/api/health") return json({ ok: true, version: 3, mode: "cloud" });
   if (path === "/api/sources") {
     return json({ v: 2, sources: buildSources(p).map((s, i) => ({ id: i, name: s.name, type: s.type })) });
   }
